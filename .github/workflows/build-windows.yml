@@ -1,4 +1,4 @@
-name: Build + Installer (Windows, GUI & Headless)
+name: Build + Installer (Windows 2025)
 
 on:
   workflow_dispatch:
@@ -14,16 +14,15 @@ env:
   DEFAULT_RS_PUB_KEY: ${{ secrets.DEFAULT_RS_PUB_KEY }}
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-
+  build:
+    runs-on: windows-2025  # legyen explicit 2025
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install Rust (stable-msvc)
+      - name: Rust (stable-msvc)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -38,7 +37,7 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
-      - name: Bootstrap vcpkg + install deps
+      - name: vcpkg + deps
         shell: pwsh
         run: |
           if (!(Test-Path .\vcpkg)) { git clone https://github.com/microsoft/vcpkg }
@@ -47,23 +46,25 @@ jobs:
           .\vcpkg\vcpkg.exe install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Install LLVM (for bindgen/libclang)
+      # LLVM / libclang: ne choco-val, hanem actionnel (stabilabb a váltáskor)
+      - name: Install LLVM & Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20"
+      - name: Export LIBCLANG_PATH
         shell: pwsh
         run: |
-          choco install -y llvm
-          $llvm = "C:\Program Files\LLVM\bin"
-          "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PATH=$llvm;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=${{ env.LLVM_PATH }}\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ---------- Build GUI ----------
-      - name: Build GUI (release)
+      - name: Build GUI
         shell: pwsh
         run: |
           cargo build --release
           $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
           Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll"
 
-      - name: Upload artifact - GUI binaries
+      - name: Upload GUI binaries
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-gui-binaries
@@ -72,25 +73,24 @@ jobs:
             target\release\sciter.dll
 
       # ---------- Build Headless ----------
-      - name: Build Headless (service, release)
+      - name: Build Headless (service)
         shell: pwsh
-        run: |
-          cargo build --release --features=nogui
+        run: cargo build --release --features=nogui
 
-      - name: Upload artifact - Headless binaries
+      - name: Upload Headless binaries
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-headless-binaries
-          path: |
-            target\release\rustdesk-service.exe
+          path: target\release\rustdesk-service.exe
 
-      # ---------- Prepare Inno Setup scripts ----------
-      - name: Prepare Inno Setup scripts
+      # ---------- Inno Setup .iss generálás ----------
+      - name: Prepare .iss files
         shell: pwsh
         run: |
           New-Item -Force -ItemType Directory dist | Out-Null
+          $src = Join-Path $PWD "target\release"
 
-          @'
+          $gui = @'
           [Setup]
           AppName=RustDesk (GUI)
           AppVersion=1.0
@@ -107,13 +107,14 @@ jobs:
           Source: "{#SourceGUI}\sciter.dll"; DestDir: "{app}"; Flags: ignoreversion
 
           [Run]
-          Filename: "{app}\rustdesk.exe"; Description: "Indítás a telepítés után"; Flags: nowait postinstall skipifsilent
+          Filename: "{app}\rustdesk.exe"; Flags: nowait postinstall skipifsilent
 
           [Icons]
           Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
-          '@ | Set-Content dist\installer-gui.iss
+          '@
+          $gui | Set-Content dist\installer-gui.iss -Encoding UTF8
 
-          @'
+          $svc = @'
           [Setup]
           AppName=RustDesk Service (Headless)
           AppVersion=1.0
@@ -135,30 +136,42 @@ jobs:
           [UninstallRun]
           Filename: "sc"; Parameters: "stop RustDeskService"; Flags: runhidden
           Filename: "sc"; Parameters: "delete RustDeskService"; Flags: runhidden
-          '@ | Set-Content dist\installer-headless.iss
+          '@
+          $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
 
-          # Defines (for both installers)
-          $defines = @"
-          #define SourceGUI "{0}"
-          #define SourceSvc "{1}"
-          "@ -f (Join-Path $PWD "target\release"), (Join-Path $PWD "target\release")
-          $defines | Set-Content dist\defines.iss
+          # átadjuk a forrás-útvonalat makróként
+          "SourceGUI=$src" | Set-Content dist\defines-gui.txt
+          "SourceSvc=$src" | Set-Content dist\defines-svc.txt
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install -y innosetup
+      # Inno Setup telepítés + fordítás akcióval (mert Windows 2025-ön nincs előre telepítve)
+      - name: Compile GUI installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1
+        with:
+          path: dist/installer-gui.iss
+          defines: |
+            SourceGUI=${{ github.workspace }}\target\release
 
-      - name: Compile installers (ISCC)
-        shell: pwsh
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & "$iscc" "/Qp" "/Sdist\defines.iss" "dist\installer-gui.iss"
-          & "$iscc" "/Qp" "/Sdist\defines.iss" "dist\installer-headless.iss"
+      - name: Compile Headless installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1
+        with:
+          path: dist/installer-headless.iss
+          defines: |
+            SourceSvc=${{ github.workspace }}\target\release
 
-      - name: Upload artifact - Installers
+      - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-installers
           path: |
             Output\RustDesk-GUI-Setup.exe
             Output\RustDesk-Headless-Setup.exe
+
+      # Opcionális: gyors diagnosztika, ha bármi bukna
+      - name: Debug versions
+        if: always()
+        shell: pwsh
+        run: |
+          rustc -V
+          cargo -V
+          clang --version || $true
+          where iscc || $true
