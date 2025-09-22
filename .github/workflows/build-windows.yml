@@ -1,4 +1,4 @@
-name: Build + Installer (Windows 2025)
+name: Build + Installers (Windows)
 
 on:
   workflow_dispatch:
@@ -9,13 +9,16 @@ permissions:
   contents: read
 
 env:
+  # Ezeket a Secrets-ben add meg!
   DEFAULT_RENDEZVOUS_SERVER: ${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}
   DEFAULT_RELAY_SERVER: ${{ secrets.DEFAULT_RELAY_SERVER }}
   DEFAULT_RS_PUB_KEY: ${{ secrets.DEFAULT_RS_PUB_KEY }}
 
 jobs:
   build:
-    runs-on: windows-2025  # legyen explicit 2025
+    # Új runner image – stabil a 2025-ös környezeten
+    runs-on: windows-2025
+
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -37,17 +40,17 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
-      - name: vcpkg + deps
+      - name: vcpkg + deps (classic mode)
         shell: pwsh
         run: |
           if (!(Test-Path .\vcpkg)) { git clone https://github.com/microsoft/vcpkg }
           .\vcpkg\bootstrap-vcpkg.bat
           $env:VCPKG_ROOT = Join-Path $PWD "vcpkg"
+          # Kötelező kodekek a Windows buildhez
           .\vcpkg\vcpkg.exe install --classic --triplet x64-windows-static libvpx libyuv opus aom
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          
-      # LLVM / libclang: ne choco-val, hanem actionnel (stabilabb a váltáskor)
-      - name: Install LLVM & Clang
+
+      - name: Install LLVM & Clang (for bindgen)
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: "20"
@@ -57,14 +60,15 @@ jobs:
           "LIBCLANG_PATH=${{ env.LLVM_PATH }}\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ---------- Build GUI ----------
-      - name: Build GUI
+      - name: Build RustDesk (GUI)
         shell: pwsh
         run: |
           cargo build --release
+          # Sciter DLL a futtatható mellé
           $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
-          Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll"
+          Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll" -UseBasicParsing
 
-      - name: Upload GUI binaries
+      - name: Upload binaries (GUI)
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-gui-binaries
@@ -72,22 +76,17 @@ jobs:
             target\release\rustdesk.exe
             target\release\sciter.dll
 
-      # ---------- Build Headless ----------
-
-      - name: Upload Headless binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-windows-headless-binaries
-          path: target\release\rustdesk-service.exe
-
-      # ---------- Inno Setup .iss generálás ----------
-      - name: Prepare .iss files
+      # ---------- Inno Setup .iss generálás (GUI + Headless) ----------
+      - name: Prepare Inno Setup scripts
         shell: pwsh
         run: |
           New-Item -Force -ItemType Directory dist | Out-Null
-          $src = Join-Path $PWD "target\release"
+          New-Item -Force -ItemType Directory Output | Out-Null
 
-          # GUI .iss – a $src-t később behelyettesítjük
+          $src = Join-Path $PWD "target\release"
+          $out = Join-Path $PWD "Output"
+
+          # GUI installer
           $gui = @'
           [Setup]
           AppName=RustDesk (GUI)
@@ -95,6 +94,7 @@ jobs:
           DefaultDirName={pf}\RustDesk
           DefaultGroupName=RustDesk
           OutputBaseFilename=RustDesk-GUI-Setup
+          OutputDir={OUT}
           Compression=lzma
           SolidCompression=yes
           ArchitecturesInstallIn64BitMode=x64
@@ -110,10 +110,10 @@ jobs:
           [Icons]
           Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
           '@
-          $gui = $gui.Replace('{SRC}', $src)
+          $gui = $gui.Replace('{SRC}', $src).Replace('{OUT}', $out)
           $gui | Set-Content dist\installer-gui.iss -Encoding UTF8
 
-          # Headless .iss – ugyanaz a bináris, service-ként telepítjük
+          # Headless = ugyanaz a bináris, service-ként telepítve
           $svc = @'
           [Setup]
           AppName=RustDesk Service (Headless)
@@ -121,6 +121,7 @@ jobs:
           DefaultDirName={pf}\RustDesk
           DefaultGroupName=RustDesk
           OutputBaseFilename=RustDesk-Headless-Setup
+          OutputDir={OUT}
           Compression=lzma
           SolidCompression=yes
           ArchitecturesInstallIn64BitMode=x64
@@ -139,15 +140,15 @@ jobs:
           Filename: "sc"; Parameters: "stop ""RustDesk Service"""; Flags: runhidden
           Filename: "sc"; Parameters: "delete ""RustDesk Service"""; Flags: runhidden
           '@
-          $svc = $svc.Replace('{SRC}', $src)
+          $svc = $svc.Replace('{SRC}', $src).Replace('{OUT}', $out)
           $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
 
-      # Inno Setup telepítés + fordítás akcióval (mert Windows 2025-ön nincs előre telepítve)
+      # Inno Setup fordítás (pinned action)
       - name: Compile GUI installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
-          path: dist\installer-gui.iss
-          
+          path: dist/installer-gui.iss
+
       - name: Compile Headless installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
@@ -158,15 +159,15 @@ jobs:
         with:
           name: rustdesk-windows-installers
           path: |
-            dist\Output\RustDesk-GUI-Setup.exe
-            dist\Output\RustDesk-Headless-Setup.exe
+            Output\RustDesk-GUI-Setup.exe
+            Output\RustDesk-Headless-Setup.exe
 
-      # Opcionális: gyors diagnosztika, ha bármi bukna
-      - name: Debug versions
+      # Debug – ha bármi félremegy, ez segít
+      - name: List outputs
         if: always()
         shell: pwsh
         run: |
-          rustc -V
-          cargo -V
-          clang --version || $true
-          where iscc || $true
+          Write-Host "Output (repo root):"
+          Get-ChildItem -Recurse -File .\Output 2>$null | Select-Object FullName, Length, LastWriteTime
+          Write-Host "dist\Output:"
+          Get-ChildItem -Recurse -File .\dist\Output 2>$null | Select-Object FullName, Length, LastWriteTime
