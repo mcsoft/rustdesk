@@ -40,15 +40,26 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
-      - name: vcpkg + deps (classic mode)
+      - name: vcpkg + deps (classic mode, robust)
         shell: pwsh
         run: |
-          if (!(Test-Path .\vcpkg)) { git clone https://github.com/microsoft/vcpkg }
-          .\vcpkg\bootstrap-vcpkg.bat
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Workspace: $PWD"
+          git --version
+          if (!(Test-Path ".\vcpkg")) {
+            git -c core.longpaths=true clone https://github.com/microsoft/vcpkg ".\vcpkg"
+          }
+          # bootstrap-et CMD-ből indítjuk, ez a legmegbízhatóbb .bat futtatásra
+          cmd /c ".\vcpkg\bootstrap-vcpkg.bat -disableMetrics"
+          if (!(Test-Path ".\vcpkg\vcpkg.exe")) {
+            Get-ChildItem -Recurse .\vcpkg | Out-Host
+            throw "vcpkg.exe not found after bootstrap"
+          }
           $env:VCPKG_ROOT = Join-Path $PWD "vcpkg"
-          # Kötelező kodekek a Windows buildhez
-          .\vcpkg\vcpkg.exe install --classic --triplet x64-windows-static libvpx libyuv opus aom
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          .\vcpkg\vcpkg.exe version
+          # Manifeszt miatt: kényszerítsük klasszikus módra
+          .\vcpkg\vcpkg.exe install --classic --triplet x64-windows-static libvpx libyuv opus aom
 
       - name: Install LLVM & Clang (for bindgen)
         uses: KyleMayes/install-llvm-action@v2
