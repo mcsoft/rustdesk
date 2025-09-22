@@ -163,11 +163,20 @@ jobs:
             Output\RustDesk-Headless-Setup.exe
 
       # Debug – ha bármi félremegy, ez segít
-      - name: List outputs
+      - name: List outputs (debug-safe)
         if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
           Write-Host "Output (repo root):"
-          Get-ChildItem -Recurse -File .\Output 2>$null | Select-Object FullName, Length, LastWriteTime
-          Write-Host "dist\Output:"
-          Get-ChildItem -Recurse -File .\dist\Output 2>$null | Select-Object FullName, Length, LastWriteTime
+          if (Test-Path .\Output) {
+            Get-ChildItem -Recurse -File .\Output | Select-Object FullName, Length, LastWriteTime
+          } else {
+            Write-Host "(not found)"
+          }
+          Write-Host "dist\Output (legacy, not used here):"
+          if (Test-Path .\dist\Output) {
+            Get-ChildItem -Recurse -File .\dist\Output | Select-Object FullName, Length, LastWriteTime
+          } else {
+            Write-Host "(not present)"
+          }
