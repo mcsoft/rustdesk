@@ -91,57 +91,57 @@ jobs:
           New-Item -Force -ItemType Directory dist | Out-Null
 
           @'
-[Setup]
-AppName=RustDesk (GUI)
-AppVersion=1.0
-DefaultDirName={pf}\RustDesk
-DefaultGroupName=RustDesk
-OutputBaseFilename=RustDesk-GUI-Setup
-Compression=lzma
-SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
-PrivilegesRequired=admin
+          [Setup]
+          AppName=RustDesk (GUI)
+          AppVersion=1.0
+          DefaultDirName={pf}\RustDesk
+          DefaultGroupName=RustDesk
+          OutputBaseFilename=RustDesk-GUI-Setup
+          Compression=lzma
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64
+          PrivilegesRequired=admin
 
-[Files]
-Source: "{#SourceGUI}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceGUI}\sciter.dll"; DestDir: "{app}"; Flags: ignoreversion
+          [Files]
+          Source: "{#SourceGUI}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "{#SourceGUI}\sciter.dll"; DestDir: "{app}"; Flags: ignoreversion
 
-[Run]
-Filename: "{app}\rustdesk.exe"; Description: "Indítás a telepítés után"; Flags: nowait postinstall skipifsilent
+          [Run]
+          Filename: "{app}\rustdesk.exe"; Description: "Indítás a telepítés után"; Flags: nowait postinstall skipifsilent
 
-[Icons]
-Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
-'@ | Set-Content dist\installer-gui.iss
+          [Icons]
+          Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
+          '@ | Set-Content dist\installer-gui.iss
 
           @'
-[Setup]
-AppName=RustDesk Service (Headless)
-AppVersion=1.0
-DefaultDirName={pf}\RustDeskService
-DefaultGroupName=RustDesk
-OutputBaseFilename=RustDesk-Headless-Setup
-Compression=lzma
-SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
-PrivilegesRequired=admin
+          [Setup]
+          AppName=RustDesk Service (Headless)
+          AppVersion=1.0
+          DefaultDirName={pf}\RustDeskService
+          DefaultGroupName=RustDesk
+          OutputBaseFilename=RustDesk-Headless-Setup
+          Compression=lzma
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64
+          PrivilegesRequired=admin
 
-[Files]
-Source: "{#SourceSvc}\rustdesk-service.exe"; DestDir: "{app}"; Flags: ignoreversion
+          [Files]
+          Source: "{#SourceSvc}\rustdesk-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 
-[Run]
-Filename: "sc"; Parameters: "create RustDeskService binPath= ""{app}\rustdesk-service.exe"" start= auto DisplayName= ""RustDesk Service"""; Flags: runhidden
-Filename: "sc"; Parameters: "start RustDeskService"; Flags: runhidden
+          [Run]
+          Filename: "sc"; Parameters: "create RustDeskService binPath= ""{app}\rustdesk-service.exe"" start= auto DisplayName= ""RustDesk Service"""; Flags: runhidden
+          Filename: "sc"; Parameters: "start RustDeskService"; Flags: runhidden
 
-[UninstallRun]
-Filename: "sc"; Parameters: "stop RustDeskService"; Flags: runhidden
-Filename: "sc"; Parameters: "delete RustDeskService"; Flags: runhidden
-'@ | Set-Content dist\installer-headless.iss
+          [UninstallRun]
+          Filename: "sc"; Parameters: "stop RustDeskService"; Flags: runhidden
+          Filename: "sc"; Parameters: "delete RustDeskService"; Flags: runhidden
+          '@ | Set-Content dist\installer-headless.iss
 
           # Defines (for both installers)
           $defines = @"
-#define SourceGUI "{0}"
-#define SourceSvc "{1}"
-"@ -f (Join-Path $PWD "target\release"), (Join-Path $PWD "target\release")
+          #define SourceGUI "{0}"
+          #define SourceSvc "{1}"
+          "@ -f (Join-Path $PWD "target\release"), (Join-Path $PWD "target\release")
           $defines | Set-Content dist\defines.iss
 
       - name: Install Inno Setup
