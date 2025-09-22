@@ -87,6 +87,7 @@ jobs:
           New-Item -Force -ItemType Directory dist | Out-Null
           $src = Join-Path $PWD "target\release"
 
+          # GUI .iss – a $src-t később behelyettesítjük
           $gui = @'
           [Setup]
           AppName=RustDesk (GUI)
@@ -100,8 +101,8 @@ jobs:
           PrivilegesRequired=admin
 
           [Files]
-          Source: "{#SourceGUI}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "{#SourceGUI}\sciter.dll"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "{SRC}\sciter.dll";   DestDir: "{app}"; Flags: ignoreversion
 
           [Run]
           Filename: "{app}\rustdesk.exe"; Flags: nowait postinstall skipifsilent
@@ -109,13 +110,15 @@ jobs:
           [Icons]
           Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
           '@
+          $gui = $gui.Replace('{SRC}', $src)
           $gui | Set-Content dist\installer-gui.iss -Encoding UTF8
 
+          # Headless .iss – ugyanaz a bináris, service-ként telepítjük
           $svc = @'
           [Setup]
           AppName=RustDesk Service (Headless)
           AppVersion=1.0
-          DefaultDirName={pf}\RustDeskService
+          DefaultDirName={pf}\RustDesk
           DefaultGroupName=RustDesk
           OutputBaseFilename=RustDesk-Headless-Setup
           Compression=lzma
@@ -123,42 +126,32 @@ jobs:
           ArchitecturesInstallIn64BitMode=x64
           PrivilegesRequired=admin
 
-
           [Files]
-          Source: "{#SourceSvc}\rustdesk.exe";  DestDir: "{app}"; Flags: ignoreversion
-          ; GUI lib a biztonság kedvéért:
-          Source: "{#SourceSvc}\sciter.dll";    DestDir: "{app}"; Flags: ignoreversion
+          Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "{SRC}\sciter.dll";  DestDir: "{app}"; Flags: ignoreversion
 
           [Run]
-          ; Telepíti a szolgáltatást admin joggal
+          ; Szolgáltatás telepítése és indítása
           Filename: "{app}\rustdesk.exe"; Parameters: "--install-service"; Flags: runhidden
-          ; Adj neki pár másodpercet, majd indítsd
           Filename: "sc"; Parameters: "start ""RustDesk Service"""; Flags: runhidden
 
           [UninstallRun]
           Filename: "sc"; Parameters: "stop ""RustDesk Service"""; Flags: runhidden
           Filename: "sc"; Parameters: "delete ""RustDesk Service"""; Flags: runhidden
-
           '@
+          $svc = $svc.Replace('{SRC}', $src)
           $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
-
-          # átadjuk a forrás-útvonalat makróként
-          "SourceGUI=$src" | Set-Content dist\defines-gui.txt
-          "SourceSvc=$src" | Set-Content dist\defines-svc.txt
 
       # Inno Setup telepítés + fordítás akcióval (mert Windows 2025-ön nincs előre telepítve)
       - name: Compile GUI installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
           path: dist/installer-gui.iss
-          # Inno Setup makró átadása (/D...), figyelj az idézőjelekre!
-          options: '/DSourceGUI="${{ github.workspace }}\target\release"'
           
       - name: Compile Headless installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
           path: dist/installer-headless.iss
-          options: '/DSourceSvc="${{ github.workspace }}\target\release"'
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
