@@ -9,14 +9,12 @@ permissions:
   contents: read
 
 env:
-  # Ezeket a Secrets-ben add meg!
   DEFAULT_RENDEZVOUS_SERVER: ${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}
   DEFAULT_RELAY_SERVER: ${{ secrets.DEFAULT_RELAY_SERVER }}
   DEFAULT_RS_PUB_KEY: ${{ secrets.DEFAULT_RS_PUB_KEY }}
 
 jobs:
   build:
-    # Új runner image – stabil a 2025-ös környezeten
     runs-on: windows-2025
 
     steps:
@@ -30,38 +28,27 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache vcpkg
-        uses: actions/cache@v4
+      # ---- vcpkg (official action) ----
+      - name: Setup vcpkg (cached)
+        uses: microsoft/setup-vcpkg@v1
         with:
-          path: |
-            ${{ github.workspace }}\vcpkg\installed
-            ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
-          restore-keys: |
-            vcpkg-${{ runner.os }}-
+          vcpkgDirectory: ${{ github.workspace }}\vcpkg
+          # Opcionálisan fixálhatod a commitot a reprodukálhatóságért:
+          # vcpkgGitCommitId: 7f1a4a9e8f4b0a8f4d6e3a9fa3c0d4c8a2b1c0d2
+          useGitHubArtifactCache: true
 
-      - name: vcpkg + deps (classic mode, robust)
+      - name: Install vcpkg deps (classic mode)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "Workspace: $PWD"
-          git --version
-          if (!(Test-Path ".\vcpkg")) {
-            git -c core.longpaths=true clone https://github.com/microsoft/vcpkg ".\vcpkg"
-          }
-          # bootstrap-et CMD-ből indítjuk, ez a legmegbízhatóbb .bat futtatásra
-          cmd /c ".\vcpkg\bootstrap-vcpkg.bat -disableMetrics"
-          if (!(Test-Path ".\vcpkg\vcpkg.exe")) {
-            Get-ChildItem -Recurse .\vcpkg | Out-Host
-            throw "vcpkg.exe not found after bootstrap"
-          }
-          $env:VCPKG_ROOT = Join-Path $PWD "vcpkg"
+          $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\vcpkg"
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          .\vcpkg\vcpkg.exe version
-          # Manifeszt miatt: kényszerítsük klasszikus módra
-          .\vcpkg\vcpkg.exe install --classic --triplet x64-windows-static libvpx libyuv opus aom
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
+          # Manifeszt üzem elkerülésére használjunk --classic-et, és adjuk meg a tripletet
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --classic --triplet x64-windows-static libvpx libyuv opus aom
 
-      - name: Install LLVM & Clang (for bindgen)
+      # ---- LLVM / libclang bindgenhez ----
+      - name: Install LLVM & Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: "20"
@@ -70,12 +57,12 @@ jobs:
         run: |
           "LIBCLANG_PATH=${{ env.LLVM_PATH }}\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # ---------- Build GUI ----------
+      # ---- Build (GUI) ----
       - name: Build RustDesk (GUI)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           cargo build --release
-          # Sciter DLL a futtatható mellé
           $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
           Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll" -UseBasicParsing
 
@@ -87,17 +74,15 @@ jobs:
             target\release\rustdesk.exe
             target\release\sciter.dll
 
-      # ---------- Inno Setup .iss generálás (GUI + Headless) ----------
+      # ---- Inno Setup scriptek generálása ----
       - name: Prepare Inno Setup scripts
         shell: pwsh
         run: |
           New-Item -Force -ItemType Directory dist | Out-Null
           New-Item -Force -ItemType Directory Output | Out-Null
-
           $src = Join-Path $PWD "target\release"
           $out = Join-Path $PWD "Output"
 
-          # GUI installer
           $gui = @'
           [Setup]
           AppName=RustDesk (GUI)
@@ -124,7 +109,6 @@ jobs:
           $gui = $gui.Replace('{SRC}', $src).Replace('{OUT}', $out)
           $gui | Set-Content dist\installer-gui.iss -Encoding UTF8
 
-          # Headless = ugyanaz a bináris, service-ként telepítve
           $svc = @'
           [Setup]
           AppName=RustDesk Service (Headless)
@@ -143,7 +127,6 @@ jobs:
           Source: "{SRC}\sciter.dll";  DestDir: "{app}"; Flags: ignoreversion
 
           [Run]
-          ; Szolgáltatás telepítése és indítása
           Filename: "{app}\rustdesk.exe"; Parameters: "--install-service"; Flags: runhidden
           Filename: "sc"; Parameters: "start ""RustDesk Service"""; Flags: runhidden
 
@@ -154,7 +137,7 @@ jobs:
           $svc = $svc.Replace('{SRC}', $src).Replace('{OUT}', $out)
           $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
 
-      # Inno Setup fordítás (pinned action)
+      # ---- Inno fordítás (pinned action) ----
       - name: Compile GUI installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
@@ -173,7 +156,6 @@ jobs:
             Output\RustDesk-GUI-Setup.exe
             Output\RustDesk-Headless-Setup.exe
 
-      # Debug – ha bármi félremegy, ez segít
       - name: List outputs (debug-safe)
         if: always()
         continue-on-error: true
@@ -184,10 +166,4 @@ jobs:
             Get-ChildItem -Recurse -File .\Output | Select-Object FullName, Length, LastWriteTime
           } else {
             Write-Host "(not found)"
-          }
-          Write-Host "dist\Output (legacy, not used here):"
-          if (Test-Path .\dist\Output) {
-            Get-ChildItem -Recurse -File .\dist\Output | Select-Object FullName, Length, LastWriteTime
-          } else {
-            Write-Host "(not present)"
           }
