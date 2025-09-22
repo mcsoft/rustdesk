@@ -34,7 +34,7 @@ jobs:
           path: |
             ${{ github.workspace }}\vcpkg\installed
             ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
@@ -45,15 +45,15 @@ jobs:
           .\vcpkg\bootstrap-vcpkg.bat
           $env:VCPKG_ROOT = Join-Path $PWD "vcpkg"
           .\vcpkg\vcpkg.exe install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
-          echo "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install LLVM (for bindgen/libclang)
         shell: pwsh
         run: |
           choco install -y llvm
           $llvm = "C:\Program Files\LLVM\bin"
-          echo "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "PATH=$llvm;$env:PATH"    | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PATH=$llvm;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ---------- Build GUI ----------
       - name: Build GUI (release)
@@ -63,19 +63,34 @@ jobs:
           $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
           Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll"
 
+      - name: Upload artifact - GUI binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-gui-binaries
+          path: |
+            target\release\rustdesk.exe
+            target\release\sciter.dll
+
       # ---------- Build Headless ----------
       - name: Build Headless (service, release)
         shell: pwsh
         run: |
           cargo build --release --features=nogui
 
-      # ---------- Create Inno Setup scripts ----------
+      - name: Upload artifact - Headless binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-headless-binaries
+          path: |
+            target\release\rustdesk-service.exe
+
+      # ---------- Prepare Inno Setup scripts ----------
       - name: Prepare Inno Setup scripts
         shell: pwsh
         run: |
           New-Item -Force -ItemType Directory dist | Out-Null
-          # GUI installer script
-          @"
+
+          @'
 [Setup]
 AppName=RustDesk (GUI)
 AppVersion=1.0
@@ -88,18 +103,17 @@ ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=admin
 
 [Files]
-Source: ""{#SourceGUI}\rustdesk.exe""; DestDir: ""{app}""; Flags: ignoreversion
-Source: ""{#SourceGUI}\sciter.dll""; DestDir: ""{app}""; Flags: ignoreversion
+Source: "{#SourceGUI}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceGUI}\sciter.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-Filename: ""{app}\rustdesk.exe""; Description: ""Indítás a telepítés után""; Flags: nowait postinstall skipifsilent
+Filename: "{app}\rustdesk.exe"; Description: "Indítás a telepítés után"; Flags: nowait postinstall skipifsilent
 
 [Icons]
-Name: ""{group}\RustDesk""; Filename: ""{app}\rustdesk.exe""
-"@ | Set-Content dist\installer-gui.iss
+Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
+'@ | Set-Content dist\installer-gui.iss
 
-          # Headless/service installer script
-          @"
+          @'
 [Setup]
 AppName=RustDesk Service (Headless)
 AppVersion=1.0
@@ -112,27 +126,24 @@ ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=admin
 
 [Files]
-Source: ""{#SourceSvc}\rustdesk-service.exe""; DestDir: ""{app}""; Flags: ignoreversion
+Source: "{#SourceSvc}\rustdesk-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-; Szolgáltatás telepítése és indítása
-Filename: ""sc""; Parameters: ""create RustDeskService binPath= \""{app}\rustdesk-service.exe\"" start= auto DisplayName= \""RustDesk Service\"""" ; Flags: runhidden
-Filename: ""sc""; Parameters: ""start RustDeskService""; Flags: runhidden
-; Postinstall INFÓ ablak
-Filename: ""cmd""; Parameters: ""/c echo A szolgáltatás telepítve és elindítva. & pause""; Flags: postinstall runhidden
+Filename: "sc"; Parameters: "create RustDeskService binPath= ""{app}\rustdesk-service.exe"" start= auto DisplayName= ""RustDesk Service"""; Flags: runhidden
+Filename: "sc"; Parameters: "start RustDeskService"; Flags: runhidden
 
 [UninstallRun]
-Filename: ""sc""; Parameters: ""stop RustDeskService""; Flags: runhidden
-Filename: ""sc""; Parameters: ""delete RustDeskService""; Flags: runhidden
-"@ | Set-Content dist\installer-headless.iss
+Filename: "sc"; Parameters: "stop RustDeskService"; Flags: runhidden
+Filename: "sc"; Parameters: "delete RustDeskService"; Flags: runhidden
+'@ | Set-Content dist\installer-headless.iss
 
-          # Param makrók az .iss-nek
-          "@
-#define SourceGUI ""{0}""
-#define SourceSvc ""{1}""
-"@ -f (Join-Path $PWD "target\release"),(Join-Path $PWD "target\release") | Set-Content dist\defines.iss
+          # Defines (for both installers)
+          $defines = @"
+#define SourceGUI "{0}"
+#define SourceSvc "{1}"
+"@ -f (Join-Path $PWD "target\release"), (Join-Path $PWD "target\release")
+          $defines | Set-Content dist\defines.iss
 
-      # ---------- Install Inno Setup & compile ----------
       - name: Install Inno Setup
         shell: pwsh
         run: choco install -y innosetup
@@ -141,26 +152,9 @@ Filename: ""sc""; Parameters: ""delete RustDeskService""; Flags: runhidden
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc "/DMyAppVersion=1.0" "/F RustDesk-GUI-Setup" "/Qp" "/Sdist\defines.iss" "dist\installer-gui.iss"
-          & $iscc "/DMyAppVersion=1.0" "/F RustDesk-Headless-Setup" "/Qp" "/Sdist\defines.iss" "dist\installer-headless.iss"
+          & "$iscc" "/Qp" "/Sdist\defines.iss" "dist\installer-gui.iss"
+          & "$iscc" "/Qp" "/Sdist\defines.iss" "dist\installer-headless.iss"
 
-      # ---------- Upload raw binaries ----------
-      - name: Upload artifact - GUI binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-windows-gui-binaries
-          path: |
-            target\release\rustdesk.exe
-            target\release\sciter.dll
-
-      - name: Upload artifact - Headless binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-windows-headless-binaries
-          path: |
-            target\release\rustdesk-service.exe
-
-      # ---------- Upload installers ----------
       - name: Upload artifact - Installers
         uses: actions/upload-artifact@v4
         with:
