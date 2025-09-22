@@ -146,7 +146,7 @@ jobs:
       - name: Compile GUI installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
         with:
-          path: dist/installer-gui.iss
+          path: dist\installer-gui.iss
           
       - name: Compile Headless installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
