@@ -158,8 +158,8 @@ jobs:
         with:
           name: rustdesk-windows-installers
           path: |
-            Output\RustDesk-GUI-Setup.exe
-            Output\RustDesk-Headless-Setup.exe
+            dist\Output\RustDesk-GUI-Setup.exe
+            dist\Output\RustDesk-Headless-Setup.exe
 
       # Opcionális: gyors diagnosztika, ha bármi bukna
       - name: Debug versions
