@@ -73,9 +73,6 @@ jobs:
             target\release\sciter.dll
 
       # ---------- Build Headless ----------
-      - name: Build Headless (service)
-        shell: pwsh
-        run: cargo build --release --features=nogui
 
       - name: Upload Headless binaries
         uses: actions/upload-artifact@v4
@@ -126,16 +123,22 @@ jobs:
           ArchitecturesInstallIn64BitMode=x64
           PrivilegesRequired=admin
 
+
           [Files]
-          Source: "{#SourceSvc}\rustdesk-service.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "{#SourceSvc}\rustdesk.exe";  DestDir: "{app}"; Flags: ignoreversion
+          ; GUI lib a biztonság kedvéért:
+          Source: "{#SourceSvc}\sciter.dll";    DestDir: "{app}"; Flags: ignoreversion
 
           [Run]
-          Filename: "sc"; Parameters: "create RustDeskService binPath= ""{app}\rustdesk-service.exe"" start= auto DisplayName= ""RustDesk Service"""; Flags: runhidden
-          Filename: "sc"; Parameters: "start RustDeskService"; Flags: runhidden
+          ; Telepíti a szolgáltatást admin joggal
+          Filename: "{app}\rustdesk.exe"; Parameters: "--install-service"; Flags: runhidden
+          ; Adj neki pár másodpercet, majd indítsd
+          Filename: "sc"; Parameters: "start ""RustDesk Service"""; Flags: runhidden
 
           [UninstallRun]
-          Filename: "sc"; Parameters: "stop RustDeskService"; Flags: runhidden
-          Filename: "sc"; Parameters: "delete RustDeskService"; Flags: runhidden
+          Filename: "sc"; Parameters: "stop ""RustDesk Service"""; Flags: runhidden
+          Filename: "sc"; Parameters: "delete ""RustDesk Service"""; Flags: runhidden
+
           '@
           $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
 
