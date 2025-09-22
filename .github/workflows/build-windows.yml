@@ -1,0 +1,94 @@
+name: Build RustDesk (Windows, GUI + Headless)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - ".github/workflows/**"
+      - "Cargo.*"
+      - "src/**"
+      - "libs/**"
+
+permissions:
+  contents: read
+
+env:
+  # Szerverkörnyezet a kliensbe "beégetve" – a Secrets-ből
+  DEFAULT_RENDEZVOUS_SERVER: ${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}
+  DEFAULT_RELAY_SERVER: ${{ secrets.DEFAULT_RELAY_SERVER }}
+  DEFAULT_RS_PUB_KEY: ${{ secrets.DEFAULT_RS_PUB_KEY }}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust (stable-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # vcpkg cache, mert a kódekek fordítása hosszú tud lenni
+      - name: Cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      - name: Bootstrap vcpkg + install deps
+        shell: pwsh
+        run: |
+          if (!(Test-Path .\vcpkg)) { git clone https://github.com/microsoft/vcpkg }
+          .\vcpkg\bootstrap-vcpkg.bat
+          $env:VCPKG_ROOT = Join-Path $PWD "vcpkg"
+          # Kötelező multimédia/lib deps Windows buildhez
+          .\vcpkg\vcpkg.exe install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
+          echo "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install LLVM (for bindgen / libclang)
+        shell: pwsh
+        run: |
+          choco install -y llvm
+          $llvm = "C:\Program Files\LLVM\bin"
+          echo "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "PATH=$llvm;$env:PATH"    | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # ---------- GUI build ----------
+      - name: Build GUI client (release)
+        shell: pwsh
+        run: |
+          cargo build --release
+          # Sciter DLL a futtatható mellé (Windows GUI)
+          $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
+          Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll"
+
+      - name: Upload artifact - GUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-gui
+          path: |
+            target\release\rustdesk.exe
+            target\release\sciter.dll
+
+      # ---------- Headless build ----------
+      - name: Build headless (service, release)
+        shell: pwsh
+        run: |
+          cargo build --release --features=nogui
+
+      - name: Upload artifact - Headless
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-headless
+          path: |
+            target\release\rustdesk-service.exe
