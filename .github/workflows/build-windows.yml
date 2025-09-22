@@ -28,14 +28,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      # ---- vcpkg (official action) ----
-      - name: Setup vcpkg (cached)
-        uses: microsoft/setup-vcpkg@v1
+      # ---- vcpkg: setup only (no auto-install) ----
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.5
         with:
           vcpkgDirectory: ${{ github.workspace }}\vcpkg
-          # Opcionálisan fixálhatod a commitot a reprodukálhatóságért:
-          # vcpkgGitCommitId: 7f1a4a9e8f4b0a8f4d6e3a9fa3c0d4c8a2b1c0d2
-          useGitHubArtifactCache: true
+          doNotCache: true   # a bináris cache-t a vcpkg maga kezeli
 
       - name: Install vcpkg deps (classic mode)
         shell: pwsh
@@ -44,7 +42,6 @@ jobs:
           $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\vcpkg"
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
           & "$env:VCPKG_ROOT\vcpkg.exe" version
-          # Manifeszt üzem elkerülésére használjunk --classic-et, és adjuk meg a tripletet
           & "$env:VCPKG_ROOT\vcpkg.exe" install --classic --triplet x64-windows-static libvpx libyuv opus aom
 
       # ---- LLVM / libclang bindgenhez ----
@@ -74,7 +71,7 @@ jobs:
             target\release\rustdesk.exe
             target\release\sciter.dll
 
-      # ---- Inno Setup scriptek generálása ----
+      # ---- Inno Setup scriptek ----
       - name: Prepare Inno Setup scripts
         shell: pwsh
         run: |
@@ -98,72 +95,4 @@ jobs:
 
           [Files]
           Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "{SRC}\sciter.dll";   DestDir: "{app}"; Flags: ignoreversion
-
-          [Run]
-          Filename: "{app}\rustdesk.exe"; Flags: nowait postinstall skipifsilent
-
-          [Icons]
-          Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
-          '@
-          $gui = $gui.Replace('{SRC}', $src).Replace('{OUT}', $out)
-          $gui | Set-Content dist\installer-gui.iss -Encoding UTF8
-
-          $svc = @'
-          [Setup]
-          AppName=RustDesk Service (Headless)
-          AppVersion=1.0
-          DefaultDirName={pf}\RustDesk
-          DefaultGroupName=RustDesk
-          OutputBaseFilename=RustDesk-Headless-Setup
-          OutputDir={OUT}
-          Compression=lzma
-          SolidCompression=yes
-          ArchitecturesInstallIn64BitMode=x64
-          PrivilegesRequired=admin
-
-          [Files]
-          Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "{SRC}\sciter.dll";  DestDir: "{app}"; Flags: ignoreversion
-
-          [Run]
-          Filename: "{app}\rustdesk.exe"; Parameters: "--install-service"; Flags: runhidden
-          Filename: "sc"; Parameters: "start ""RustDesk Service"""; Flags: runhidden
-
-          [UninstallRun]
-          Filename: "sc"; Parameters: "stop ""RustDesk Service"""; Flags: runhidden
-          Filename: "sc"; Parameters: "delete ""RustDesk Service"""; Flags: runhidden
-          '@
-          $svc = $svc.Replace('{SRC}', $src).Replace('{OUT}', $out)
-          $svc | Set-Content dist\installer-headless.iss -Encoding UTF8
-
-      # ---- Inno fordítás (pinned action) ----
-      - name: Compile GUI installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
-        with:
-          path: dist/installer-gui.iss
-
-      - name: Compile Headless installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
-        with:
-          path: dist/installer-headless.iss
-
-      - name: Upload installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-windows-installers
-          path: |
-            Output\RustDesk-GUI-Setup.exe
-            Output\RustDesk-Headless-Setup.exe
-
-      - name: List outputs (debug-safe)
-        if: always()
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Write-Host "Output (repo root):"
-          if (Test-Path .\Output) {
-            Get-ChildItem -Recurse -File .\Output | Select-Object FullName, Length, LastWriteTime
-          } else {
-            Write-Host "(not found)"
-          }
+          Source: "{
