@@ -28,12 +28,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      # ---- vcpkg: setup only (no auto-install) ----
+      # ---- vcpkg beállítás ----
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.5
         with:
           vcpkgDirectory: ${{ github.workspace }}\vcpkg
-          doNotCache: true   # a bináris cache-t a vcpkg maga kezeli
+          doNotCache: true
 
       - name: Install vcpkg deps (classic mode)
         shell: pwsh
@@ -60,6 +60,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           cargo build --release
+          # Sciter DLL a futtatható mellé
           $sciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll"
           Invoke-WebRequest $sciterUrl -OutFile ".\target\release\sciter.dll" -UseBasicParsing
 
@@ -71,28 +72,98 @@ jobs:
             target\release\rustdesk.exe
             target\release\sciter.dll
 
-      # ---- Inno Setup scriptek ----
+      # ---- Inno Setup scriptek (HERE-STRING NÉLKÜL) ----
       - name: Prepare Inno Setup scripts
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           New-Item -Force -ItemType Directory dist | Out-Null
           New-Item -Force -ItemType Directory Output | Out-Null
+
           $src = Join-Path $PWD "target\release"
           $out = Join-Path $PWD "Output"
 
-          $gui = @'
-          [Setup]
-          AppName=RustDesk (GUI)
-          AppVersion=1.0
-          DefaultDirName={pf}\RustDesk
-          DefaultGroupName=RustDesk
-          OutputBaseFilename=RustDesk-GUI-Setup
-          OutputDir={OUT}
-          Compression=lzma
-          SolidCompression=yes
-          ArchitecturesInstallIn64BitMode=x64
-          PrivilegesRequired=admin
+          $guiLines = @(
+            '[Setup]',
+            'AppName=RustDesk (GUI)',
+            'AppVersion=1.0',
+            'DefaultDirName={pf}\RustDesk',
+            'DefaultGroupName=RustDesk',
+            'OutputBaseFilename=RustDesk-GUI-Setup',
+            'OutputDir={OUT}',
+            'Compression=lzma',
+            'SolidCompression=yes',
+            'ArchitecturesInstallIn64BitMode=x64',
+            'PrivilegesRequired=admin',
+            '',
+            '[Files]',
+            'Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion',
+            'Source: "{SRC}\sciter.dll";   DestDir: "{app}"; Flags: ignoreversion',
+            '',
+            '[Run]',
+            'Filename: "{app}\rustdesk.exe"; Flags: nowait postinstall skipifsilent',
+            '',
+            '[Icons]',
+            'Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"'
+          )
+          $guiText = ($guiLines -join "`r`n").Replace('{SRC}', $src).Replace('{OUT}', $out)
+          Set-Content -LiteralPath dist\installer-gui.iss -Value $guiText -Encoding UTF8
 
-          [Files]
-          Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "{
+          $svcLines = @(
+            '[Setup]',
+            'AppName=RustDesk Service (Headless)',
+            'AppVersion=1.0',
+            'DefaultDirName={pf}\RustDesk',
+            'DefaultGroupName=RustDesk',
+            'OutputBaseFilename=RustDesk-Headless-Setup',
+            'OutputDir={OUT}',
+            'Compression=lzma',
+            'SolidCompression=yes',
+            'ArchitecturesInstallIn64BitMode=x64',
+            'PrivilegesRequired=admin',
+            '',
+            '[Files]',
+            'Source: "{SRC}\rustdesk.exe"; DestDir: "{app}"; Flags: ignoreversion',
+            'Source: "{SRC}\sciter.dll";  DestDir: "{app}"; Flags: ignoreversion',
+            '',
+            '[Run]',
+            'Filename: "{app}\rustdesk.exe"; Parameters: "--install-service"; Flags: runhidden',
+            'Filename: "sc"; Parameters: "start ""RustDesk Service"""; Flags: runhidden',
+            '',
+            '[UninstallRun]',
+            'Filename: "sc"; Parameters: "stop ""RustDesk Service"""; Flags: runhidden',
+            'Filename: "sc"; Parameters: "delete ""RustDesk Service"""; Flags: runhidden'
+          )
+          $svcText = ($svcLines -join "`r`n").Replace('{SRC}', $src).Replace('{OUT}', $out)
+          Set-Content -LiteralPath dist\installer-headless.iss -Value $svcText -Encoding UTF8
+
+      # ---- Inno fordítás ----
+      - name: Compile GUI installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
+        with:
+          path: dist/installer-gui.iss
+
+      - name: Compile Headless installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
+        with:
+          path: dist/installer-headless.iss
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-installers
+          path: |
+            Output\RustDesk-GUI-Setup.exe
+            Output\RustDesk-Headless-Setup.exe
+
+      - name: List outputs (debug-safe)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "Output (repo root):"
+          if (Test-Path .\Output) {
+            Get-ChildItem -Recurse -File .\Output | Select-Object FullName, Length, LastWriteTime
+          } else {
+            Write-Host "(not found)"
+          }
