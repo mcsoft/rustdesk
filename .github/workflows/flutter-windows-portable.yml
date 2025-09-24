@@ -1,0 +1,151 @@
+name: Flutter Windows Portable
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+env:
+  # Opcionális alapértelmezések (üresen is maradhatnak).
+  DEFAULT_RENDEZVOUS_SERVER: ""
+  DEFAULT_RS_PUB_KEY: ""
+  DEFAULT_RELAY_SERVER: ""
+
+jobs:
+  build-win-flutter:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust (stable msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.5
+        with:
+          vcpkgDirectory: ${{ github.workspace }}\vcpkg
+          doNotCache: true
+
+      - name: Install vcpkg libs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\vcpkg"
+          "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --classic --triplet x64-windows-static libvpx libyuv opus aom
+
+      - name: Install LLVM (for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20"
+      - name: Export LIBCLANG_PATH
+        shell: pwsh
+        run: |
+          "LIBCLANG_PATH=${{ env.LLVM_PATH }}\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+      - name: Enable Windows desktop for Flutter
+        shell: pwsh
+        run: |
+          flutter --version
+          flutter config --enable-windows-desktop
+          flutter doctor -v
+
+      # --- (Opció) Szerver értékek beégetése build-időben ---
+      - name: Prepare server defaults (env)
+        shell: pwsh
+        env:
+          RENDEZVOUS_SERVER_S: ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY_S: ${{ secrets.RS_PUB_KEY }}
+          RELAY_SERVER_S: ${{ secrets.RELAY_SERVER }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:RENDEZVOUS_SERVER_S) { $env:RENDEZVOUS_SERVER_S = "${{ env.DEFAULT_RENDEZVOUS_SERVER }}" }
+          if (-not $env:RS_PUB_KEY_S)      { $env:RS_PUB_KEY_S      = "${{ env.DEFAULT_RS_PUB_KEY }}" }
+          if (-not $env:RELAY_SERVER_S)    { $env:RELAY_SERVER_S    = "${{ env.DEFAULT_RELAY_SERVER }}" }
+          # A Rust kód compile-time olvassa az env-ket (pl. option_env!("RS_PUB_KEY")).
+          "RENDEZVOUS_SERVER=$env:RENDEZVOUS_SERVER_S" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RS_PUB_KEY=$env:RS_PUB_KEY_S"               | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELAY_SERVER=$env:RELAY_SERVER_S"           | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using RENDEZVOUS_SERVER=$env:RENDEZVOUS_SERVER_S"
+          Write-Host "Using RS_PUB_KEY=(hidden)"
+          Write-Host "Using RELAY_SERVER=$env:RELAY_SERVER_S"
+
+      # --- A virtuális kijelző DLL felépítése (Windows csomag része) ---
+      - name: Build virtual_display dylib
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location .\libs\virtual_display\dylib
+          cargo build --release
+          Pop-Location
+
+      # --- Rust lib build (Flutter GUI-hoz) ---
+      - name: Build Rust core as DLL (release)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --lib --release
+
+      # --- Flutter Windows build ---
+      - name: Flutter build windows (release)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location .\flutter
+          flutter pub get
+          flutter build windows --release
+          Pop-Location
+
+      - name: Copy required DLLs to Flutter output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $PWD "flutter\build\windows\x64\runner\Release"
+          New-Item -Force -ItemType Directory $outDir | Out-Null
+          # Upstream build.py is ide másolja a dylib_virtual_display.dll-t:
+          # target\release\deps\dylib_virtual_display.dll -> flutter/build/.../Release
+          $vdll = Join-Path $PWD "target\release\deps\dylib_virtual_display.dll"
+          if (Test-Path $vdll) {
+            Copy-Item $vdll $outDir -Force
+          } else {
+            Write-Warning "dylib_virtual_display.dll not found at $vdll"
+          }
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = "flutter\build\windows\x64\runner\Release"
+          $zip = "rustdesk-windows-flutter-portable.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "$src\*" -DestinationPath $zip -CompressionLevel Optimal
+          Write-Host "Packaged: $zip"
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-flutter-portable
+          path: rustdesk-windows-flutter-portable.zip
+
+      - name: List output (debug)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue | `
+            Where-Object { $_.Name -like "rustdesk-windows-flutter-portable.zip" -or $_.FullName -match "flutter\\build\\windows\\x64\\runner\\Release" } | `
+            Select-Object FullName, Length, LastWriteTime
